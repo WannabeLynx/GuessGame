@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rory's Flag & Domain Quiz</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+
+  <script src="https://cdn.amcharts.com/lib/5/index.js"></script>
+  <script src="https://cdn.amcharts.com/lib/5/map.js"></script>
+  <script src="https://cdn.amcharts.com/lib/5/geodata/worldLow.js"></script>
+  <script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script>
+</head>
+
+<body class="bg-gray-100 text-gray-800 flex flex-col items-center justify-center min-h-screen p-4 overflow-hidden">
+
+  <div class="w-full h-[95vh] bg-white rounded-lg shadow-lg p-6 flex flex-col relative">
+    <h1 class="text-3xl font-bold text-center mb-4 flex-shrink-0">Rory's Flag & Domain Quiz</h1>
+
+    <div id="last-missed-container" class="absolute top-4 left-4 bg-white p-2 rounded-md shadow-lg hidden z-10">
+      <p class="text-sm font-semibold mb-1 text-gray-600">Last Missed:</p>
+      <img id="last-missed-flag" src="" alt="Missed country flag"
+        class="w-16 h-10 border border-gray-300 rounded-sm cursor-pointer">
+    </div>
+
+    <div class="flex justify-center items-center space-x-4 mb-4 flex-shrink-0">
+      <button id="guess-flags-btn"
+        class="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors">Guess Flags</button>
+      <button id="guess-domains-btn"
+        class="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors">Guess Domains</button>
+    </div>
+
+    <div id="quiz-area" class="text-center mb-4 h-24 flex flex-col justify-center items-center flex-shrink-0">
+      <p id="instruction-text">Select a mode to start the quiz!</p>
+      <div id="quiz-item" class="hidden"></div>
+      <div class="flex space-x-4 items-center">
+        <p id="progress-text" class="mt-2 text-lg font-medium"></p>
+        <p id="tries-left" class="mt-2 text-lg font-medium"></p>
+      </div>
+    </div>
+
+    <div id="map-container" class="w-full border rounded-md overflow-hidden bg-gray-200 flex-grow"></div>
+  </div>
+
+  <div id="result-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-20">
+    <div class="bg-white p-8 rounded-lg shadow-xl text-center">
+      <h2 id="modal-title" class="text-2xl font-bold mb-4"></h2>
+      <div id="modal-text" class="mb-6 text-left space-y-2"></div>
+      <button
+        id="play-again-btn"
+        class="px-6 py-2 bg-indigo-500 text-white rounded-md hover:bg-indigo-600 transition-colors"
+      >
+        Play Again
+      </button>
+    </div>
+  </div>
+
+  <script src="countries.js"></script>
+
+  <script>
+    let quizType = null;
+    let activeGame = false;
+    let quizCountries = [];
+    let currentCountryIndex = 0;
+    let currentCountry = null;
+    let triesForCurrentCountry = 3;
+    let guessedIncorrectly = [];
+    let answeredCountries = [];
+    let lastMissedCountryId = null;
+    let stats = {
+      firstTry: 0,
+      secondTry: 0,
+      thirdTry: 0,
+      failed: 0,
+    };
+
+    const COLORS = {
+      default: am5.color(0xdbeafe),
+      hover: am5.color(0xbfdbfe),
+      notInQuiz: am5.color(0xf3f4f6),
+      incorrect: am5.color(0xfca5a5),
+      correct: am5.color(0x86efac),
+      failed: am5.color(0xef4444),
+      stroke: am5.color(0x6b7280)
+    };
+
+    const mapContainer = document.getElementById('map-container');
+    const guessFlagsBtn = document.getElementById('guess-flags-btn');
+    const guessDomainsBtn = document.getElementById('guess-domains-btn');
+    const quizItemDiv = document.getElementById('quiz-item');
+    const triesLeftP = document.getElementById('tries-left');
+    const instructionText = document.getElementById('instruction-text');
+    const progressText = document.getElementById('progress-text');
+    const resultModal = document.getElementById('result-modal');
+    const modalTitle = document.getElementById('modal-title');
+    const modalText = document.getElementById('modal-text');
+    const playAgainBtn = document.getElementById('play-again-btn');
+    const lastMissedContainer = document.getElementById('last-missed-container');
+    const lastMissedFlag = document.getElementById('last-missed-flag');
+
+
+    let root, chart, polygonSeries;
+
+    function loadMap() {
+      if (typeof am5 === 'undefined' || typeof countryData === 'undefined') {
+        console.error("amCharts or countryData not loaded");
+        mapContainer.innerHTML = `<p class="text-red-500 font-semibold text-center p-4">Error loading map library or data.</p>`;
+        return;
+      }
+
+      root = am5.Root.new("map-container");
+      root.setThemes([am5themes_Animated.new(root)]);
+
+      chart = root.container.children.push(am5map.MapChart.new(root, {
+        panX: "rotateX",
+        panY: "translateY",
+        projection: am5map.geoMercator()
+      }));
+
+      chart.set("zoomControl", am5map.ZoomControl.new(root, {}));
+
+      polygonSeries = chart.series.push(am5map.MapPolygonSeries.new(root, {
+        geoJSON: am5geodata_worldLow,
+        exclude: ["AQ"]
+      }));
+
+      polygonSeries.mapPolygons.template.setAll({
+        templateField: "polygonSettings",
+        interactive: true
+      });
+      polygonSeries.mapPolygons.template.events.on("click", handleCountryClick);
+      setupMap();
+    }
+
+    function setupMap() {
+      const mapData = am5geodata_worldLow.features.map(feature => {
+        const id = feature.id;
+        const countryInfo = countryData[id];
+
+        let settings = {};
+        let labelText = "";
+        let tooltipHTML = "";
+
+        if (countryInfo) {
+          if (countryInfo.inQuiz) {
+            settings = {
+              fill: COLORS.default,
+              stroke: COLORS.stroke,
+              hover: { fill: COLORS.hover }
+            };
+            labelText = countryInfo.name;
+          } else {
+            settings = {
+              fill: COLORS.notInQuiz,
+              stroke: COLORS.stroke,
+              hover: { fill: COLORS.hover }
+            };
+          }
+        } else {
+          settings = {
+            fill: COLORS.notInQuiz,
+            stroke: COLORS.stroke,
+            interactive: false
+          };
+        }
+
+        return {
+          id: id,
+          name: feature.properties.name,
+          labelText: labelText,
+          polygonSettings: { ...settings, tooltipHTML: tooltipHTML }
+        };
+      });
+
+      polygonSeries.data.setAll(mapData);
+
+      polygonSeries.mapPolygons.template.set("label", am5.Label.new(root, {
+        text: "{labelText}",
+        populateText: true,
+        centerX: am5.p50,
+        centerY: am5.p50,
+        fontSize: 10,
+        fill: am5.color(0x000000)
+      }));
+
+      updateTooltips(false);
+    }
+
+    function updateTooltips(isGameActive) {
+      polygonSeries.data.each(dataObject => {
+        const id = dataObject.id;
+        const countryInfo = countryData[id];
+        let tooltipHTML = "";
+
+        if (countryInfo) {
+          if (isGameActive) {
+            tooltipHTML = `<div style="padding: 8px; background: white; color: black; border-radius: 4px;"><strong>{name}</strong></div>`;
+          } else {
+            if (countryInfo.inQuiz) {
+              tooltipHTML = `
+                <div style="padding: 10px; background: white; color: black; border-radius: 6px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); border: 1px solid #ccc;">
+                    <div style="display: flex; align-items: center;">
+                        <img src="https://flagcdn.com/w40/${id.toLowerCase()}.png" style="width: 40px; margin-right: 10px; border: 1px solid #eee;">
+                        <div>
+                            <strong style="font-size: 16px; display: block; margin-bottom: 2px;">{name}</strong>
+                            <span style="font-size: 14px;">Domain: <strong>${countryInfo.domain || 'N/A'}</strong></span>
+                        </div>
+                    </div>
+                </div>`;
+            } else {
+              tooltipHTML = `<div style="padding: 8px; background: white; color: black; border-radius: 4px;"><strong>{name}</strong></div>`;
+            }
+          }
+        }
+        const dataItem = polygonSeries.getDataItemById(id);
+        if (dataItem) {
+          const polygon = dataItem.get("mapPolygon");
+          if (polygon) {
+            polygon.set("tooltipHTML", tooltipHTML);
+          }
+        }
+      });
+    }
+
+    function startQuiz(type) {
+      resetQuizState();
+      quizType = type;
+      activeGame = true;
+      updateTooltips(true);
+      instructionText.classList.add('hidden');
+      quizItemDiv.classList.remove('hidden');
+      const allQuizCountries = Object.keys(countryData).filter(id => countryData[id].inQuiz);
+      quizCountries = allQuizCountries.sort(() => Math.random() - 0.5);
+      currentCountryIndex = 0;
+      nextQuestion();
+    }
+
+    function nextQuestion() {
+      if (lastMissedCountryId) {
+        const dataItem = polygonSeries.getDataItemById(lastMissedCountryId);
+        if (dataItem) dataItem.get("mapPolygon")?.hideTooltip();
+      }
+
+      guessedIncorrectly.forEach(countryId => {
+        const dataItem = polygonSeries.getDataItemById(countryId);
+        if (dataItem && !answeredCountries.includes(countryId)) {
+          dataItem.get("mapPolygon").set("fill", COLORS.default);
+        }
+      });
+      guessedIncorrectly = [];
+      triesForCurrentCountry = 3;
+
+      if (currentCountryIndex >= quizCountries.length) {
+        showFinalResults();
+        return;
+      }
+
+      const countryCode = quizCountries[currentCountryIndex];
+      currentCountry = { id: countryCode, ...countryData[countryCode] };
+
+      if (quizType === 'flags') {
+        quizItemDiv.innerHTML = `<img src="https://flagcdn.com/w160/${currentCountry.id.toLowerCase()}.png" alt="Country Flag" class="mx-auto">`;
+      } else {
+        quizItemDiv.innerHTML = `<span class="text-4xl font-bold text-gray-700">${currentCountry.domain}</span>`;
+      }
+      updateTriesDisplay();
+      updateProgressDisplay();
+    }
+
+    function handleCountryClick(ev) {
+      if (!activeGame || !currentCountry || !ev.target.dataItem) return;
+
+      const clickedCountryId = ev.target.dataItem.get("id");
+      const countryInfo = countryData[clickedCountryId];
+
+      if (!countryInfo || !countryInfo.inQuiz || answeredCountries.includes(clickedCountryId)) {
+        return;
+      }
+
+      if (clickedCountryId === currentCountry.id) {
+        if (triesForCurrentCountry === 3) stats.firstTry++;
+        else if (triesForCurrentCountry === 2) stats.secondTry++;
+        else if (triesForCurrentCountry === 1) stats.thirdTry++;
+
+        answeredCountries.push(clickedCountryId);
+        ev.target.set("fill", COLORS.correct);
+        currentCountryIndex++;
+        setTimeout(nextQuestion, 500);
+      } else {
+        triesForCurrentCountry--;
+        if (!guessedIncorrectly.includes(clickedCountryId)) {
+          guessedIncorrectly.push(clickedCountryId);
+        }
+        ev.target.set("fill", COLORS.incorrect);
+        updateTriesDisplay();
+
+        if (triesForCurrentCountry === 0) {
+          stats.failed++;
+
+          lastMissedCountryId = currentCountry.id;
+          lastMissedContainer.classList.remove('hidden');
+          lastMissedFlag.src = `https://flagcdn.com/w40/${lastMissedCountryId.toLowerCase()}.png`;
+          lastMissedFlag.alt = `Flag of ${currentCountry.name}`;
+
+          answeredCountries.push(currentCountry.id);
+          const correctCountryPolygon = polygonSeries.getDataItemById(currentCountry.id)?.get("mapPolygon");
+          if (correctCountryPolygon) {
+            correctCountryPolygon.set("fill", COLORS.failed);
+          }
+          currentCountryIndex++;
+          setTimeout(nextQuestion, 1500);
+        }
+      }
+    }
+
+    function showFinalResults() {
+      activeGame = false;
+      updateTooltips(false);
+      modalTitle.textContent = 'Quiz Complete!';
+      modalText.innerHTML = `
+        <p><strong>First Try:</strong> ${stats.firstTry}</p>
+        <p><strong>Second Try:</strong> ${stats.secondTry}</p>
+        <p><strong>Third Try:</strong> ${stats.thirdTry}</p>
+        <p><strong>Failed:</strong> ${stats.failed}</p>
+        <p class="font-bold mt-4">Total: ${quizCountries.length}</p>
+      `;
+      resultModal.classList.remove('hidden');
+    }
+
+    function updateTriesDisplay() {
+      if (!activeGame) {
+        triesLeftP.textContent = '';
+        return;
+      }
+      triesLeftP.textContent = `Tries: ${'❤️'.repeat(triesForCurrentCountry)}${'🖤'.repeat(3 - triesForCurrentCountry)}`;
+    }
+
+    function updateProgressDisplay() {
+      if (!activeGame) {
+        progressText.textContent = '';
+        return;
+      }
+      progressText.textContent = `Country: ${currentCountryIndex + 1} / ${quizCountries.length}`;
+    }
+
+    function resetQuizState() {
+      activeGame = false;
+      quizType = null;
+      quizCountries = [];
+      currentCountryIndex = 0;
+      currentCountry = null;
+      triesForCurrentCountry = 3;
+      guessedIncorrectly = [];
+      answeredCountries = [];
+      stats = { firstTry: 0, secondTry: 0, thirdTry: 0, failed: 0 };
+      quizItemDiv.classList.add('hidden');
+      instructionText.textContent = 'Select a mode to start the quiz!';
+      instructionText.classList.remove('hidden');
+      updateTriesDisplay();
+      updateProgressDisplay();
+      updateTooltips(false);
+
+      lastMissedCountryId = null;
+      lastMissedContainer.classList.add('hidden');
+
+      polygonSeries.data.each((dataObject) => {
+        const id = dataObject.id;
+        const countryInfo = countryData[id];
+        const dataItem = polygonSeries.getDataItemById(id);
+        if (dataItem) {
+          const polygon = dataItem.get("mapPolygon");
+          if (polygon && countryInfo) {
+            polygon.set("fill", countryInfo.inQuiz ? COLORS.default : COLORS.notInQuiz);
+          }
+        }
+      });
+
+      resultModal.classList.add('hidden');
+    }
+
+    guessFlagsBtn.addEventListener('click', () => startQuiz('flags'));
+    guessDomainsBtn.addEventListener('click', () => startQuiz('domains'));
+    playAgainBtn.addEventListener('click', resetQuizState);
+
+    // --- ADDED: Event listeners for hovering over the missed flag ---
+    lastMissedFlag.addEventListener('mouseover', () => {
+      if (lastMissedCountryId && activeGame) {
+        const dataItem = polygonSeries.getDataItemById(lastMissedCountryId);
+        if (dataItem) {
+          const polygon = dataItem.get("mapPolygon");
+          if (polygon) {
+            polygon.showTooltip();
+          }
+        }
+      }
+    });
+
+    lastMissedFlag.addEventListener('mouseout', () => {
+      if (lastMissedCountryId && activeGame) {
+        const dataItem = polygonSeries.getDataItemById(lastMissedCountryId);
+        if (dataItem) {
+          const polygon = dataItem.get("mapPolygon");
+          if (polygon) {
+            polygon.hideTooltip();
+          }
+        }
+      }
+    });
+
+    window.addEventListener('load', loadMap);
+
+  </script>
+</body>
+
+</html>
